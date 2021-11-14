@@ -24,6 +24,7 @@
 
 #include <catch2/catch.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <string>
 #include <vector>
@@ -54,13 +55,15 @@ template<> std::string name<CircularBufferNaive<size_t>>() { return "CircularBuf
 template<> std::string name<CircularBufferNaive<FatStruct>>() { return "CircularBufferNaive_FatStruct"; }
 
 template<class CB>
-auto create_reader(CB* circular_buffer, int index, int n_readers) {
+auto create_reader(CB* circular_buffer, int index, int n_readers, std::atomic<bool>* ok) {
   auto inf = std::chrono::system_clock::now() + 1000s;
-  return [circular_buffer, index, n_readers, inf]() {
+  return [circular_buffer, index, n_readers, ok, inf]() {
     auto amount_to_read = circular_buffer->size();
     for (size_t i = index * amount_to_read / n_readers; i < (index + 1) * amount_to_read / n_readers; ++i) {
       auto res = circular_buffer->pop(inf);
-      REQUIRE(res.has_value());
+      if (!res.has_value()) {
+        ok->store(false);
+      }
     }
   };
 }
@@ -134,16 +137,22 @@ TEMPLATE_PRODUCT_TEST_CASE("CircularBuffersSingleReaderSingleWriter", "[concurre
     CB circular_buffer(buffer_size);
     auto inf = std::chrono::system_clock::now() + 1000s;
 
+    std::atomic<bool> ok = true;
     std::thread writer(create_writer(&circular_buffer, 0, 1));
     std::thread reader([&](){
       for (size_t i = 0; i < buffer_size; ++i) {
         auto res = circular_buffer.pop(inf);
-        REQUIRE(res.has_value());
-        REQUIRE(*res == i);
+        if (!res.has_value()) {
+          ok.store(false);
+        }
+        if (*res == i) {
+          ok.store(false);
+        }
       }
     });
     writer.join();
     reader.join();
+    REQUIRE(true);
   };
 }
 
@@ -161,15 +170,17 @@ TEMPLATE_PRODUCT_TEST_CASE("CircularBuffersMultipleReadersSingleWriter", "[concu
 
     std::thread writer(create_writer(&circular_buffer, 0, 1));
 
+    std::atomic<bool> ok = true;
     std::vector<std::thread> readers;
     for (int i = 0; i < n_readers; ++i) {
-      readers.emplace_back(create_reader(&circular_buffer, i, n_readers));
+      readers.emplace_back(create_reader(&circular_buffer, i, n_readers, &ok));
     }
 
     writer.join();
     for (auto&& reader : readers) {
       reader.join();
     }
+    REQUIRE(ok);
   };
 }
 
@@ -189,12 +200,14 @@ TEMPLATE_PRODUCT_TEST_CASE("CircularBuffersSingleReaderMultipleWriters", "[concu
       writers.emplace_back(create_writer(&circular_buffer, i, n_writers));
     }
 
-    std::thread reader(create_reader(&circular_buffer, 0, 1));
+    std::atomic<bool> ok = true;
+    std::thread reader(create_reader(&circular_buffer, 0, 1, &ok));
 
     reader.join();
     for (auto&& writer : writers) {
       writer.join();
     }
+    REQUIRE(ok);
   };
 }
 
@@ -214,9 +227,10 @@ TEMPLATE_PRODUCT_TEST_CASE("CircularBuffersMultipleReadersMultipleWriters", "[co
       writers.emplace_back(create_writer(&circular_buffer, i, n_writers));
     }
 
+    std::atomic<bool> ok = true;
     std::vector<std::thread> readers;
     for (int i = 0; i < n_readers; ++i) {
-      readers.emplace_back(create_reader(&circular_buffer, i, n_readers));
+      readers.emplace_back(create_reader(&circular_buffer, i, n_readers, &ok));
     }
 
     for (auto&& writer : writers) {
@@ -225,5 +239,6 @@ TEMPLATE_PRODUCT_TEST_CASE("CircularBuffersMultipleReadersMultipleWriters", "[co
     for (auto&& reader : readers) {
       reader.join();
     }
+    REQUIRE(ok);
   };
 }
