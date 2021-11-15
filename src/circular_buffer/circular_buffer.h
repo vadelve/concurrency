@@ -136,7 +136,7 @@ class CircularBufferNaive {
 //              amount of simultaneous pushes will never be more than the size of the container.
 //              amount of push operations will never be more than uint64_t can hold.
 //
-// ATTENTION: have some chances to be buggy.
+// ATTENTION: may have a bug.
 //
 // TODO:      maybe fix false sharing on the done_flag_.
 //
@@ -177,8 +177,9 @@ class CircularBufferFast {
     size_t cur_value = index;
     while (writer_finished_.compare_exchange_weak(cur_value, cur_value + 1)) {
       // help other workers to move finished flag if they finished before us.
+      done_flag_[index % buffer_.size()].store(false);
       cur_value = (cur_value + 1) % buffer_.size();
-      if (!done_flag_[cur_value].exchange(false)) {
+      if (!done_flag_[cur_value].load()) {
         break;
       }
     }
@@ -204,7 +205,7 @@ class CircularBufferFast {
 //
 // pop    gets value from the front of the container and may block and wait for data to appear.
 //
-// ATTENTION: most likely has a bug.
+// ATTENTION: may have a bug.
 //
 // TODO:      maybe fix false sharing on the done_flag_.
 //            also maybe need to optimize traffic between caches.
@@ -263,11 +264,12 @@ class CircularBuffer {
   inline void release_ticket(std::atomic<size_t>& finished, size_t ticket) {
     // we can use one flag vector because writers and readers tickets never intersects
     done_flag_[ticket].store(true);
-    size_t cur_value = ticket;
-    while (finished.compare_exchange_weak(cur_value, (cur_value + 1) % buffer_.size())) {
+    auto cur_value = ticket;
+    while (finished.compare_exchange_strong(cur_value, (cur_value + 1) % buffer_.size())) {
       // help other workers to move finished flag if they finished before us.
+      done_flag_[cur_value].store(false);
       cur_value = (cur_value + 1) % buffer_.size();
-      if (!done_flag_[cur_value].exchange(false)) {
+      if (!done_flag_[cur_value].load()) {
         break;
       }
     }
